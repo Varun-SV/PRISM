@@ -19,14 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Linux: install CUDA toolkit for MLIR CUDA runner compilation ──
-      - name: Install CUDA toolkit
+      # ── Linux: build tools ───────────────────────────────────────────
+      # DEVIATION: MLIR_ENABLE_CUDA_RUNNER=OFF on GitHub-hosted runners.
+      # GitHub-hosted runners have no GPU, so CUDA runner support adds no
+      # test coverage here. It is enabled on the self-hosted GPU runner
+      # (gpu.yml). This avoids needing to install CUDA (multi-GB download)
+      # on every CI run.
+      - name: Install build tools (Linux)
         if: runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@v0.2.16
-        with:
-          cuda: "12.5.1"
-          method: network
-          use-github-cache: true
+        run: sudo apt-get install -y ninja-build cmake python3
 
       # ── macOS: build tools ────────────────────────────────────────────
       - name: Install build tools (macOS)
@@ -51,7 +52,7 @@ jobs:
           if [ "${{ runner.os }}" = "Linux" ]; then
             echo "LLVM_PROJECTS=mlir;clang;lld"    >> $GITHUB_ENV
             echo "LLVM_TARGETS=X86;NVPTX;AArch64"  >> $GITHUB_ENV
-            echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=ON" >> $GITHUB_ENV
+            echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=OFF" >> $GITHUB_ENV
             echo "LLD_FLAG=-DLLVM_ENABLE_LLD=ON"   >> $GITHUB_ENV
           elif [ "${{ runner.os }}" = "macOS" ]; then
             echo "LLVM_PROJECTS=mlir;clang;lld"    >> $GITHUB_ENV
@@ -75,7 +76,7 @@ jobs:
           # DEVIATION: LLVM built as Release (not RelWithDebInfo) in CI.
           # RelWithDebInfo LLVM install exceeds the 10 GB GHA cache limit.
           # LLVM_ENABLE_ASSERTIONS=ON is preserved — the important flag.
-          key: llvm-18.1.8-${{ runner.os }}-cuda12.5-assertions-v1
+          key: llvm-18.1.8-${{ runner.os }}-assertions-v1
 
       # ── Build LLVM from source on cache miss ──────────────────────────
       - name: Checkout LLVM 18
