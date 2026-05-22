@@ -48,18 +48,15 @@ jobs:
             echo "LLVM_PROJECTS=mlir;clang;lld"    >> $GITHUB_ENV
             echo "LLVM_TARGETS=X86;NVPTX;AArch64"  >> $GITHUB_ENV
             echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=OFF" >> $GITHUB_ENV
-            echo "LLD_FLAG=-DLLVM_ENABLE_LLD=ON"   >> $GITHUB_ENV
           elif [ "${{ runner.os }}" = "macOS" ]; then
             echo "LLVM_PROJECTS=mlir;clang;lld"    >> $GITHUB_ENV
             echo "LLVM_TARGETS=X86;NVPTX;AArch64"  >> $GITHUB_ENV
             echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=OFF" >> $GITHUB_ENV
-            echo "LLD_FLAG="                         >> $GITHUB_ENV
           else
-            # Windows: no CUDA, no LLD (use MSVC link.exe), no NVPTX
+            # Windows: no CUDA, no LLD (MSVC link.exe), no NVPTX
             echo "LLVM_PROJECTS=mlir;clang"         >> $GITHUB_ENV
             echo "LLVM_TARGETS=X86;AArch64"          >> $GITHUB_ENV
             echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=OFF" >> $GITHUB_ENV
-            echo "LLD_FLAG="                         >> $GITHUB_ENV
           fi
 
       # ── Restore LLVM 18 install from cache ───────────────────────────
@@ -100,7 +97,6 @@ jobs:
             "-DLLVM_TARGETS_TO_BUILD=${{ env.LLVM_TARGETS }}" \
             ${{ env.CUDA_RUNNER }} \
             -DLLVM_ENABLE_ASSERTIONS=ON \
-            ${{ env.LLD_FLAG }} \
             "-DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX" \
             -DLLVM_INSTALL_UTILS=ON \
             -DLLVM_BUILD_TESTS=OFF \
