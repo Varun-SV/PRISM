@@ -1,0 +1,33 @@
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  modernize-use-using,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-default-member-init,
+  modernize-use-nodiscard,
+  performance-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-named-parameter
+
+WarningsAsErrors: "*"
+
+HeaderFilterRegex: "^.*include/prism/.*$"
+
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelCase
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: true

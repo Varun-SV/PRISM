@@ -1,0 +1,182 @@
+name: PRISM Build and Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+        build_type: [RelWithDebInfo]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Linux: install CUDA toolkit for MLIR CUDA runner compilation ──
+      - name: Install CUDA toolkit
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.16
+        with:
+          cuda: "12.5.1"
+          method: network
+          use-github-cache: true
+
+      # ── macOS: build tools ────────────────────────────────────────────
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja cmake python3
+
+      # ── Windows: MSVC environment + Ninja ────────────────────────────
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: amd64
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install -y ninja
+
+      # ── Set per-OS LLVM configure flags ──────────────────────────────
+      - name: Set LLVM build config
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "LLVM_PROJECTS=mlir;clang;lld"    >> $GITHUB_ENV
+            echo "LLVM_TARGETS=X86;NVPTX;AArch64"  >> $GITHUB_ENV
+            echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=ON" >> $GITHUB_ENV
+            echo "LLD_FLAG=-DLLVM_ENABLE_LLD=ON"   >> $GITHUB_ENV
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            echo "LLVM_PROJECTS=mlir;clang;lld"    >> $GITHUB_ENV
+            echo "LLVM_TARGETS=X86;NVPTX;AArch64"  >> $GITHUB_ENV
+            echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=OFF" >> $GITHUB_ENV
+            echo "LLD_FLAG="                         >> $GITHUB_ENV
+          else
+            # Windows: no CUDA, no LLD (use MSVC link.exe), no NVPTX
+            echo "LLVM_PROJECTS=mlir;clang"         >> $GITHUB_ENV
+            echo "LLVM_TARGETS=X86;AArch64"          >> $GITHUB_ENV
+            echo "CUDA_RUNNER=-DMLIR_ENABLE_CUDA_RUNNER=OFF" >> $GITHUB_ENV
+            echo "LLD_FLAG="                         >> $GITHUB_ENV
+          fi
+
+      # ── Restore LLVM 18 install from cache ───────────────────────────
+      - name: Restore LLVM 18 from cache
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/llvm-install
+          # DEVIATION: LLVM built as Release (not RelWithDebInfo) in CI.
+          # RelWithDebInfo LLVM install exceeds the 10 GB GHA cache limit.
+          # LLVM_ENABLE_ASSERTIONS=ON is preserved — the important flag.
+          key: llvm-18.1.8-${{ runner.os }}-cuda12.5-assertions-v1
+
+      # ── Build LLVM from source on cache miss ──────────────────────────
+      - name: Checkout LLVM 18
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: llvmorg-18.1.8
+          path: llvm-project
+          fetch-depth: 1
+
+      - name: Configure LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          INSTALL_PREFIX="${{ github.workspace }}/llvm-install"
+          # Windows path separator fix
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            INSTALL_PREFIX=$(cygpath -m "$INSTALL_PREFIX")
+          fi
+          cmake -G Ninja \
+            -S llvm-project/llvm \
+            -B llvm-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DLLVM_ENABLE_PROJECTS=${{ env.LLVM_PROJECTS }}" \
+            "-DLLVM_TARGETS_TO_BUILD=${{ env.LLVM_TARGETS }}" \
+            ${{ env.CUDA_RUNNER }} \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            ${{ env.LLD_FLAG }} \
+            "-DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX" \
+            -DLLVM_INSTALL_UTILS=ON \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
+            -DCLANG_ENABLE_ARCMT=OFF \
+            -DLLVM_PARALLEL_LINK_JOBS=2
+
+      - name: Build and install LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: ninja -C llvm-build install
+
+      # ── Detect PRISM source ──────────────────────────────────────────
+      - name: Check for CMakeLists.txt
+        id: has-source
+        shell: bash
+        run: |
+          if [ -f CMakeLists.txt ]; then
+            echo "exists=true"  >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice::No CMakeLists.txt found — build and test steps skipped."
+          fi
+
+      # ── Configure PRISM ──────────────────────────────────────────────
+      - name: Configure PRISM (Linux / macOS)
+        if: steps.has-source.outputs.exists == 'true' && runner.os != 'Windows'
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            "-DLLVM_DIR=${{ github.workspace }}/llvm-install/lib/cmake/llvm" \
+            "-DMLIR_DIR=${{ github.workspace }}/llvm-install/lib/cmake/mlir" \
+            "-DCMAKE_C_COMPILER=${{ github.workspace }}/llvm-install/bin/clang" \
+            "-DCMAKE_CXX_COMPILER=${{ github.workspace }}/llvm-install/bin/clang++" \
+            ${{ env.CUDA_RUNNER }}
+
+      - name: Configure PRISM (Windows)
+        if: steps.has-source.outputs.exists == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          LLVM_INSTALL=$(cygpath -m "${{ github.workspace }}/llvm-install")
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            "-DLLVM_DIR=$LLVM_INSTALL/lib/cmake/llvm" \
+            "-DMLIR_DIR=$LLVM_INSTALL/lib/cmake/mlir" \
+            -DMLIR_ENABLE_CUDA_RUNNER=OFF
+
+      # ── Build PRISM ──────────────────────────────────────────────────
+      - name: Build PRISM
+        if: steps.has-source.outputs.exists == 'true'
+        run: ninja -C build
+
+      # ── Run CPU tests ────────────────────────────────────────────────
+      - name: Run CPU tests
+        if: steps.has-source.outputs.exists == 'true'
+        run: ninja -C build check-prism-cpu
+
+      # ── Upload Linux artifacts for gpu.yml ───────────────────────────
+      - name: Upload Linux build artifacts
+        if: runner.os == 'Linux' && steps.has-source.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-linux-build
+          path: |
+            build/lib/
+            build/bin/
+            llvm-install/
+          retention-days: 1

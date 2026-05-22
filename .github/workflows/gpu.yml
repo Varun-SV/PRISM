@@ -1,0 +1,88 @@
+# GPU RUNNER SETUP
+# ─────────────────────────────────────────────────────────────────────────────
+# This workflow requires a self-hosted Linux runner with an NVIDIA GPU and
+# CUDA 12+ installed. GitHub Pro does NOT include GitHub-hosted GPU runners
+# (those require GitHub Team or Enterprise Cloud).
+#
+# Option A — Your own GPU machine (free with any GitHub plan):
+#   1. Go to: Settings → Actions → Runners → "New self-hosted runner"
+#   2. Select Linux, follow the setup script instructions on your machine
+#   3. Add labels: self-hosted, linux, gpu
+#   4. Install CUDA 12+ on the machine:
+#        https://developer.nvidia.com/cuda-downloads
+#   5. Install the NVIDIA Container Toolkit (optional, for container builds):
+#        https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/
+#
+# Option B — WarpBuild pay-per-minute GPU runners (~$0.003+/min):
+#   No self-hosted machine required. Sign up at https://warpbuild.com
+#   Then replace `runs-on: [self-hosted, linux, gpu]` with their label.
+#
+# Option C — RunsOn (€300/year flat, needs your own AWS account):
+#   https://runs-on.com/runners/gpu/
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: PRISM GPU Tests
+
+# Triggered automatically after build.yml succeeds on main.
+# This avoids running expensive GPU tests on every PR.
+on:
+  workflow_run:
+    workflows: ["PRISM Build and Test"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  cuda-tests:
+    name: GPU Tests (self-hosted)
+    # Only run when the upstream build workflow succeeded.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, gpu]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Download the Linux build artifacts produced by build.yml ──────
+      - name: Download Linux build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-linux-build
+          # `github-token` and `run-id` are required when downloading from
+          # a different workflow run (workflow_run trigger).
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      # ── Verify CUDA is available on the runner ────────────────────────
+      - name: Verify CUDA runtime
+        run: |
+          nvidia-smi
+          nvcc --version
+
+      # ── Restore executable permissions stripped by artifact upload ────
+      - name: Restore executable permissions
+        run: |
+          find build/bin -type f -exec chmod +x {} \;
+          find llvm-install/bin -type f -exec chmod +x {} \;
+
+      # ── Detect PRISM GPU test target ──────────────────────────────────
+      - name: Check for GPU test target
+        id: has-gpu-tests
+        run: |
+          if [ -f build/build.ninja ] && grep -q 'check-prism-gpu' build/build.ninja; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice::check-prism-gpu target not found — GPU test step skipped."
+          fi
+
+      # ── Run GPU tests ─────────────────────────────────────────────────
+      - name: Run GPU tests
+        if: steps.has-gpu-tests.outputs.exists == 'true'
+        env:
+          LLVM_DIR: ${{ github.workspace }}/llvm-install/lib/cmake/llvm
+          MLIR_DIR: ${{ github.workspace }}/llvm-install/lib/cmake/mlir
+        run: ninja -C build check-prism-gpu
+
+      # ── Run CUDA-tagged GTest suites ──────────────────────────────────
+      - name: Run CUDA GTests
+        if: steps.has-gpu-tests.outputs.exists == 'true'
+        run: ctest --test-dir build --output-on-failure -R "CUDA|Gpu|gpu"
