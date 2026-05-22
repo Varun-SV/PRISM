@@ -19,6 +19,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── Early exit when there is nothing to build yet ────────────────
+      # This check runs first so that all subsequent steps (brew, choco,
+      # LLVM build) are skipped entirely until PRISM source is added.
+      - name: Check for CMakeLists.txt
+        id: has-source
+        shell: bash
+        run: |
+          if [ -f CMakeLists.txt ]; then
+            echo "exists=true"  >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice::No CMakeLists.txt found — all build steps skipped."
+          fi
+
       # ── Linux: no extra setup needed ─────────────────────────────────
       # cmake, ninja-build, and python3 are pre-installed on ubuntu-24.04
       # GitHub-hosted runners. MLIR_ENABLE_CUDA_RUNNER is OFF here because
@@ -26,22 +40,23 @@ jobs:
 
       # ── macOS: build tools ────────────────────────────────────────────
       - name: Install build tools (macOS)
-        if: runner.os == 'macOS'
+        if: steps.has-source.outputs.exists == 'true' && runner.os == 'macOS'
         run: brew install ninja cmake python3
 
       # ── Windows: MSVC environment + Ninja ────────────────────────────
       - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
+        if: steps.has-source.outputs.exists == 'true' && runner.os == 'Windows'
         with:
           arch: amd64
 
       - name: Install Ninja (Windows)
-        if: runner.os == 'Windows'
+        if: steps.has-source.outputs.exists == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: choco install -y ninja
 
       # ── Set per-OS LLVM configure flags ──────────────────────────────
       - name: Set LLVM build config
+        if: steps.has-source.outputs.exists == 'true'
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
@@ -61,6 +76,7 @@ jobs:
 
       # ── Restore LLVM 18 install from cache ───────────────────────────
       - name: Restore LLVM 18 from cache
+        if: steps.has-source.outputs.exists == 'true'
         id: cache-llvm
         uses: actions/cache@v4
         with:
@@ -72,7 +88,7 @@ jobs:
 
       # ── Build LLVM from source on cache miss ──────────────────────────
       - name: Checkout LLVM 18
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.has-source.outputs.exists == 'true' && steps.cache-llvm.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: llvm/llvm-project
@@ -81,7 +97,7 @@ jobs:
           fetch-depth: 1
 
       - name: Configure LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.has-source.outputs.exists == 'true' && steps.cache-llvm.outputs.cache-hit != 'true'
         shell: bash
         run: |
           INSTALL_PREFIX="${{ github.workspace }}/llvm-install"
@@ -113,20 +129,8 @@ jobs:
             -DLLVM_PARALLEL_LINK_JOBS=2
 
       - name: Build and install LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.has-source.outputs.exists == 'true' && steps.cache-llvm.outputs.cache-hit != 'true'
         run: ninja -C llvm-build install
-
-      # ── Detect PRISM source ──────────────────────────────────────────
-      - name: Check for CMakeLists.txt
-        id: has-source
-        shell: bash
-        run: |
-          if [ -f CMakeLists.txt ]; then
-            echo "exists=true"  >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "::notice::No CMakeLists.txt found — build and test steps skipped."
-          fi
 
       # ── Configure PRISM ──────────────────────────────────────────────
       - name: Configure PRISM (Linux / macOS)
