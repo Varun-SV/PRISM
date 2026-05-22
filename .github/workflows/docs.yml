@@ -1,0 +1,77 @@
+name: PRISM Docs
+
+on:
+  push:
+    branches: [main]
+
+# Required for GitHub Pages deployment via actions/deploy-pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time; don't cancel in-progress deploys.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-docs:
+    name: Build Sphinx + Doxygen docs
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doxygen and Graphviz
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y doxygen graphviz
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Sphinx and Breathe
+        run: pip install sphinx breathe sphinx-rtd-theme
+
+      # ── Skip gracefully when docs/ doesn't exist yet ─────────────────
+      - name: Check for docs directory
+        id: has-docs
+        run: |
+          if [ -d docs ]; then
+            echo "exists=true"  >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice::docs/ directory not found — documentation build skipped."
+          fi
+
+      # ── Run Doxygen ───────────────────────────────────────────────────
+      - name: Run Doxygen
+        if: steps.has-docs.outputs.exists == 'true'
+        run: doxygen docs/Doxyfile
+
+      # ── Run Sphinx (-W treats warnings as errors) ─────────────────────
+      - name: Run Sphinx
+        if: steps.has-docs.outputs.exists == 'true'
+        run: sphinx-build -W -b html docs docs/_build/html
+
+      # ── Package for GitHub Pages ──────────────────────────────────────
+      - name: Upload Pages artifact
+        if: steps.has-docs.outputs.exists == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy-docs:
+    name: Deploy to GitHub Pages
+    needs: build-docs
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
